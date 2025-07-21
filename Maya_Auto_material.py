@@ -1,39 +1,15 @@
-# -*- coding: utf-8 -*-
-"""
-Maya Material & Texture Manager
-
-選択したオブジェクト名に基づいてArnoldマテリアルを作成・割り当て、
-テクスチャの自動接続や各種ユーティリティ機能を提供するMaya用ツール。
-
-主な機能:
-- 選択オブジェクトに基づいたマテリアルの自動作成と割り当て
-- シーン内のマテリアル一覧表示と、関連オブジェクトの選択
-- テクスチャ検索パスの設定と履歴管理（自動保存）、テクスチャの一括リロード
-- テクスチャタイプごとの自動接続・切断（UDIM対応）
-- Arnold関連アトリビュート（Subdivision, Displacement）のインタラクティブな調整
-- ユーティリティ機能（未使用ノード削除、Normal Map一括トグル、Subdivision一括設定）
-
-バージョン: 2.8
-最終更新日: 2025-07-21
-作者: Gemini
-"""
-
 import maya.cmds as mc
 import maya.mel as mel
 import os
 import re
 from functools import partial
 
-# Maya 2024 / 2025 以降のバージョンに対応するため、PySide6を使用
 from PySide6 import QtWidgets, QtCore, QtGui
 from maya.app.general.mayaMixin import MayaQWidgetBaseMixin
 from shiboken6 import wrapInstance
 from maya import OpenMayaUI as omui
 
 
-# --- グローバル定数と設定 ---
-
-# 接続するテクスチャタイプとシェーダのアトリビュート名を定義
 ATTRIBUTE_MAP = {
     "base_color": "baseColor",
     "metalness": "metalness",
@@ -43,12 +19,10 @@ ATTRIBUTE_MAP = {
     "opacity": "opacity"
 }
 
-# リニアワークフローで処理すべきテクスチャタイプ
 LINEAR_WORKFLOW_TYPES = [
     "metalness", "specular", "specular_roughness", "transmission", "opacity", "normal", "displacement"
 ]
 
-# optionVar用のキー
 OPTION_VAR_KEY = "MAYA_MATERIAL_ASSIGNER_SAVED_PATHS"
 
 
@@ -67,30 +41,26 @@ class MaterialTextureManagerWindow(MayaQWidgetBaseMixin, QtWidgets.QWidget):
         super(MaterialTextureManagerWindow, self).__init__(parent)
         self.setWindowTitle("Material & Texture Manager")
         self.resize(450, 400)
-        # 標準的なリサイズ可能なウィンドウとして設定
         self.setWindowFlags(QtCore.Qt.Window)
         
         self.selection_script_job = None
         self.connection_buttons = {} 
-        self._is_updating_ui = False # UI更新中の再帰呼び出しを防ぐフラグ
+        self._is_updating_ui = False 
 
         self.setup_ui()
         
-        # Arnoldがロードされているか確認
         if not mc.pluginInfo("mtoa", query=True, loaded=True):
             mc.warning("Arnold Renderer (mtoa) is not loaded. Please load the plugin.")
             self.assign_button.setEnabled(False)
             self.status_label.setText("<font color='red'>Arnold (mtoa) is not loaded.</font>")
         
-        # UI表示後の初期化処理
         self.load_saved_paths()
         self.populate_material_list()
         self.start_selection_monitor()
-        self.update_selection_info() # 初期選択状態を反映
+        self.update_selection_info() 
 
     def setup_ui(self):
         """UIの部品を作成し、ウィンドウに配置する"""
-        # UI全体をスクロール可能にするための構造
         top_layout = QtWidgets.QVBoxLayout(self)
         top_layout.setContentsMargins(0, 0, 0, 0)
 
@@ -105,7 +75,6 @@ class MaterialTextureManagerWindow(MayaQWidgetBaseMixin, QtWidgets.QWidget):
         main_layout = QtWidgets.QVBoxLayout(scroll_content_widget)
         main_layout.setContentsMargins(9, 9, 9, 9)
 
-        # --- 選択情報セクション ---
         selection_group = QtWidgets.QGroupBox("選択情報")
         selection_layout = QtWidgets.QVBoxLayout()
         
@@ -126,7 +95,6 @@ class MaterialTextureManagerWindow(MayaQWidgetBaseMixin, QtWidgets.QWidget):
         selection_layout.addWidget(self.selected_material_label)
         selection_group.setLayout(selection_layout)
 
-        # --- マテリアル作成セクション ---
         assign_group = QtWidgets.QGroupBox("マテリアル作成・割り当て")
         assign_layout = QtWidgets.QVBoxLayout()
         description_label = QtWidgets.QLabel(
@@ -140,7 +108,6 @@ class MaterialTextureManagerWindow(MayaQWidgetBaseMixin, QtWidgets.QWidget):
         assign_layout.addWidget(self.assign_button)
         assign_group.setLayout(assign_layout)
 
-        # --- テクスチャ検索パス設定セクション ---
         path_group = QtWidgets.QGroupBox("テクスチャ検索パス設定")
         path_layout = QtWidgets.QVBoxLayout()
 
@@ -166,7 +133,6 @@ class MaterialTextureManagerWindow(MayaQWidgetBaseMixin, QtWidgets.QWidget):
         path_layout.addWidget(self.active_path_label)
         path_group.setLayout(path_layout)
         
-        # --- テクスチャ接続の管理セクション ---
         connection_group = QtWidgets.QGroupBox("テクスチャ接続の管理")
         connection_layout = QtWidgets.QGridLayout()
         
@@ -183,7 +149,6 @@ class MaterialTextureManagerWindow(MayaQWidgetBaseMixin, QtWidgets.QWidget):
                 col, row = 0, row + 1
         connection_group.setLayout(connection_layout)
 
-        # --- Arnold アトリビュートセクション ---
         arnold_group = QtWidgets.QGroupBox("Arnold アトリビュート")
         arnold_layout = QtWidgets.QVBoxLayout()
 
@@ -201,7 +166,7 @@ class MaterialTextureManagerWindow(MayaQWidgetBaseMixin, QtWidgets.QWidget):
         height_layout = QtWidgets.QHBoxLayout()
         height_label = QtWidgets.QLabel("Shape Disp. Height:")
         self.height_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
-        self.height_slider.setRange(0, 200) # 0.0 to 2.0
+        self.height_slider.setRange(0, 200)
         self.height_line_edit = QtWidgets.QLineEdit("1.0")
         self.height_line_edit.setFixedWidth(40)
         self.height_line_edit.setValidator(QtGui.QDoubleValidator(0.0, 100.0, 2))
@@ -213,11 +178,9 @@ class MaterialTextureManagerWindow(MayaQWidgetBaseMixin, QtWidgets.QWidget):
         arnold_layout.addLayout(height_layout)
         arnold_group.setLayout(arnold_layout)
 
-        # --- ユーティリティセクション ---
         utility_group = QtWidgets.QGroupBox("ユーティリティ")
         utility_layout = QtWidgets.QVBoxLayout()
         
-        # ★★★ 変更点: 新しいボタンを追加 ★★★
         self.set_subdiv_button = QtWidgets.QPushButton("Set Default Subdivision")
         self.set_subdiv_button.setStyleSheet("background-color: #6B7280; color: white; padding: 6px;")
         self.set_subdiv_button.setToolTip("選択したメッシュのSubdivisionを有効化し、\nIterations=2, Type=Catclarkに設定します。")
@@ -233,7 +196,6 @@ class MaterialTextureManagerWindow(MayaQWidgetBaseMixin, QtWidgets.QWidget):
         utility_layout.addWidget(self.delete_unused_button)
         utility_group.setLayout(utility_layout)
         
-        # --- レイアウトへの追加 ---
         main_layout.addWidget(selection_group)
         main_layout.addWidget(assign_group)
         main_layout.addWidget(path_group)
@@ -242,15 +204,12 @@ class MaterialTextureManagerWindow(MayaQWidgetBaseMixin, QtWidgets.QWidget):
         main_layout.addWidget(utility_group)
         main_layout.addStretch(1)
         
-        # --- ステータスラベル（スクロールエリアの外） ---
         self.status_label = QtWidgets.QLabel("Ready.")
-        self.status_label.setStyleSheet("padding: 2px 9px;") # 見栄えのためのパディング
+        self.status_label.setStyleSheet("padding: 2px 9px;") 
 
-        # トップレイアウトにスクロールエリアとステータスラベルを配置
         top_layout.addWidget(scroll_area)
         top_layout.addWidget(self.status_label)
 
-        # --- シグナル接続 ---
         self.material_selector_combo.currentIndexChanged.connect(self.select_objects_from_material)
         self.refresh_materials_button.clicked.connect(self.populate_material_list)
         self.assign_button.clicked.connect(self.process_selection)
@@ -267,48 +226,37 @@ class MaterialTextureManagerWindow(MayaQWidgetBaseMixin, QtWidgets.QWidget):
         self.height_line_edit.returnPressed.connect(self.update_height_slider)
         self.height_slider.sliderReleased.connect(self.apply_displacement_height)
 
-        # ★★★ 変更点: 新しいボタンのシグナルを接続 ★★★
         self.set_subdiv_button.clicked.connect(self.set_default_subdivision)
         self.invert_y_button.clicked.connect(self.toggle_all_normal_invert_y)
         self.reload_button.clicked.connect(self.reload_all_textures)
         self.delete_unused_button.clicked.connect(self.delete_unused_nodes)
 
-    # --------------------------------------------------------------------------
-    # イベントとUI更新
-    # --------------------------------------------------------------------------
-
     def start_selection_monitor(self):
-        """Mayaの選択変更イベントを監視するscriptJobを開始する"""
         if not self.selection_script_job:
             self.selection_script_job = mc.scriptJob(event=["SelectionChanged", self.update_selection_info], protected=True)
 
     def stop_selection_monitor(self):
-        """scriptJobを停止する"""
         if self.selection_script_job and mc.scriptJob(exists=self.selection_script_job):
             mc.scriptJob(kill=self.selection_script_job, force=True)
             self.selection_script_job = None
 
     def closeEvent(self, event):
-        """ウィンドウが閉じられるときにscriptJobを停止する"""
         self.stop_selection_monitor()
         super(MaterialTextureManagerWindow, self).closeEvent(event)
 
     def update_selection_info(self):
-        """選択されたオブジェクトに基づいてUI全体を更新する"""
         if self._is_updating_ui: return
         
         self._is_updating_ui = True
         try:
             shader = self.get_shader_from_selection()
             
-            # 選択マテリアルラベルの更新
             if shader:
                 self.selected_material_label.setText(shader)
             else:
                 selection = mc.ls(selection=True, head=1)
                 self.selected_material_label.setText("マテリアルがありません" if selection else "オブジェクトを選択してください")
 
-            # マテリアル選択ドロップダウンの更新
             self.material_selector_combo.blockSignals(True)
             if shader:
                 index = self.material_selector_combo.findText(shader)
@@ -318,14 +266,12 @@ class MaterialTextureManagerWindow(MayaQWidgetBaseMixin, QtWidgets.QWidget):
                 self.material_selector_combo.setCurrentIndex(0)
             self.material_selector_combo.blockSignals(False)
 
-            # 各UIセクションの更新
             self.update_arnold_attributes_ui()
             self.update_connection_status_ui()
         finally:
             self._is_updating_ui = False
 
     def populate_material_list(self):
-        """シーン内のaiStandardSurfaceマテリアルをリストアップしてUIに表示する"""
         self.material_selector_combo.blockSignals(True)
         current_selection = self.material_selector_combo.currentText()
         self.material_selector_combo.clear()
@@ -335,17 +281,15 @@ class MaterialTextureManagerWindow(MayaQWidgetBaseMixin, QtWidgets.QWidget):
             self.material_selector_combo.addItem("シーンにマテリアルがありません")
             self.material_selector_combo.setEnabled(False)
         else:
-            self.material_selector_combo.addItems([""] + sorted(shaders)) # 先頭に空の選択肢を追加
+            self.material_selector_combo.addItems([""] + sorted(shaders)) 
             self.material_selector_combo.setEnabled(True)
             index = self.material_selector_combo.findText(current_selection)
             if index != -1:
                 self.material_selector_combo.setCurrentIndex(index)
                 
         self.material_selector_combo.blockSignals(False)
-        # self.update_selection_info() # 無限ループを避けるため、ここでは呼ばない
 
     def select_objects_from_material(self):
-        """UIのドロップダウンからマテリアルが選択されたときに、対応するオブジェクトを選択する"""
         if self._is_updating_ui: return
             
         self._is_updating_ui = True
@@ -361,7 +305,6 @@ class MaterialTextureManagerWindow(MayaQWidgetBaseMixin, QtWidgets.QWidget):
                 if members:
                     transforms_to_select = []
                     for member in members:
-                        # 常にトランスフォームノードを選択する
                         if mc.nodeType(member) in ['mesh', 'nurbsSurface', 'subdiv']:
                             parent = mc.listRelatives(member, parent=True, fullPath=True)
                             if parent: transforms_to_select.append(parent[0])
@@ -374,14 +317,11 @@ class MaterialTextureManagerWindow(MayaQWidgetBaseMixin, QtWidgets.QWidget):
                         mc.select(clear=True)
         finally:
             self._is_updating_ui = False
-            # 選択変更イベントが即座に発行されないことがあるため、手動でUIを更新
             mc.evalDeferred(self.update_selection_info)
 
     def update_arnold_attributes_ui(self):
-        """選択オブジェクトに基づいてArnold関連UIを更新する"""
         shape = self.get_selected_shape()
         
-        # Subdivision UIの更新
         has_subdiv = bool(shape and mc.attributeQuery('aiSubdivIterations', node=shape, exists=True))
         self.subdiv_slider.setEnabled(has_subdiv)
         self.subdiv_line_edit.setEnabled(has_subdiv)
@@ -396,7 +336,6 @@ class MaterialTextureManagerWindow(MayaQWidgetBaseMixin, QtWidgets.QWidget):
         else:
             self.subdiv_line_edit.setText("-")
 
-        # Displacement Height UIの更新
         has_disp = bool(shape and mc.attributeQuery('aiDispHeight', node=shape, exists=True))
         self.height_slider.setEnabled(has_disp)
         self.height_line_edit.setEnabled(has_disp)
@@ -412,7 +351,6 @@ class MaterialTextureManagerWindow(MayaQWidgetBaseMixin, QtWidgets.QWidget):
             self.height_line_edit.setText("-")
 
     def update_connection_status_ui(self):
-        """選択中のマテリアルのテクスチャ接続状態をUIボタンに反映させる"""
         shader = self.get_shader_from_selection()
         if not shader:
             for tex_type, button in self.connection_buttons.items():
@@ -426,37 +364,28 @@ class MaterialTextureManagerWindow(MayaQWidgetBaseMixin, QtWidgets.QWidget):
             button.setEnabled(True)
             if is_connected:
                 button.setText(f"{tex_type}: ON")
-                button.setStyleSheet("background-color: #02B918; color: white;") # Green
+                button.setStyleSheet("background-color: #02B918; color: white;") 
             else:
                 button.setText(f"{tex_type}: OFF")
-                button.setStyleSheet("background-color: #6B7280; color: white;") # Gray
-
-    # --------------------------------------------------------------------------
-    # ヘルパー関数 (オブジェクト情報取得)
-    # --------------------------------------------------------------------------
+                button.setStyleSheet("background-color: #6B7280; color: white;")
 
     def get_selected_shape(self):
-        """選択中のオブジェクトから最初のメッシュシェイプノードを取得する"""
         selection = mc.ls(selection=True, head=1)
         if not selection: return None
         shapes = mc.listRelatives(selection[0], shapes=True, fullPath=True, type='mesh')
         return shapes[0] if shapes else None
 
     def get_shader_from_selection(self):
-        """選択中のオブジェクトからシェーダノードを取得する"""
         shape = self.get_selected_shape()
         if not shape: return None
         sg_nodes = mc.listConnections(shape, type='shadingEngine')
         if not sg_nodes: return None
-        # surfaceShaderの接続を優先的に取得
         shaders = mc.listConnections(f"{sg_nodes[0]}.surfaceShader")
         if shaders: return shaders[0]
-        # Arnoldの独自接続も考慮
         shaders = mc.listConnections(f"{sg_nodes[0]}.aiSurfaceShader")
         return shaders[0] if shaders else None
         
     def _is_texture_connected(self, shader, tex_type):
-        """指定されたシェーダの特定テクスチャタイプに接続があるか確認する"""
         full_attr = ""
         if tex_type == "normal":
             full_attr = f"{shader}.normalCamera"
@@ -471,10 +400,6 @@ class MaterialTextureManagerWindow(MayaQWidgetBaseMixin, QtWidgets.QWidget):
         
         return bool(mc.listConnections(full_attr, s=True, d=False))
 
-    # --------------------------------------------------------------------------
-    # UIコントロール用スロット
-    # --------------------------------------------------------------------------
-
     def update_subdiv_text(self, value):
         self.subdiv_line_edit.setText(str(value))
 
@@ -484,7 +409,7 @@ class MaterialTextureManagerWindow(MayaQWidgetBaseMixin, QtWidgets.QWidget):
             self.subdiv_slider.setValue(value)
             self.apply_subdivision_iterations()
         except ValueError:
-            pass # 不正な入力は無視
+            pass 
 
     def update_height_text(self, value):
         self.height_line_edit.setText(f"{value / 100.0:.2f}")
@@ -495,28 +420,22 @@ class MaterialTextureManagerWindow(MayaQWidgetBaseMixin, QtWidgets.QWidget):
             self.height_slider.setValue(int(value * 100))
             self.apply_displacement_height()
         except ValueError:
-            pass # 不正な入力は無視
+            pass 
 
-    # --------------------------------------------------------------------------
-    # メイン機能 (マテリアル・テクスチャ操作)
-    # --------------------------------------------------------------------------
 
     def apply_subdivision_iterations(self):
-        """Subdivision Iterationsの値をオブジェクトに適用する"""
         value = self.subdiv_slider.value()
         shape = self.get_selected_shape()
         if shape and mc.objExists(shape) and mc.attributeQuery('aiSubdivIterations', node=shape, exists=True):
             mc.setAttr(f"{shape}.aiSubdivIterations", value)
 
     def apply_displacement_height(self):
-        """Displacement Heightの値をシェイプノードのaiDispHeightに適用する"""
         value = self.height_slider.value() / 100.0
         shape = self.get_selected_shape()
         if shape and mc.objExists(shape) and mc.attributeQuery('aiDispHeight', node=shape, exists=True):
             mc.setAttr(f"{shape}.aiDispHeight", value)
 
     def process_selection(self):
-        """選択されたオブジェクトに対してマテリアル作成と割り当てを実行する"""
         selection = mc.ls(selection=True, long=True)
         if not selection:
             self.status_label.setText("<font color='red'>エラー: オブジェクトが選択されていません。</font>")
@@ -545,20 +464,16 @@ class MaterialTextureManagerWindow(MayaQWidgetBaseMixin, QtWidgets.QWidget):
         self.update_selection_info()
 
     def create_and_assign_material(self, obj_path, obj_name):
-        """一つのオブジェクトに対して、マテリアル作成と割り当てを行う"""
         clean_name = re.sub(r'[^a-zA-Z0-9_]', '_', obj_name)
         shader_name = f"{clean_name}_mat"
         
-        # 既存のマテリアルを検索
         if mc.objExists(shader_name) and mc.nodeType(shader_name) == 'aiStandardSurface':
             shader_node = shader_name
             is_new_material = False
         else:
-            # 新規作成
             shader_node = mc.shadingNode('aiStandardSurface', asShader=True, name=shader_name)
             is_new_material = True
 
-        # シェーディンググループの取得または作成
         sg_connections = mc.listConnections(shader_node, d=True, s=False, type="shadingEngine")
         if sg_connections:
             sg_node = sg_connections[0]
@@ -566,12 +481,10 @@ class MaterialTextureManagerWindow(MayaQWidgetBaseMixin, QtWidgets.QWidget):
             sg_node = mc.sets(renderable=True, noSurfaceShader=True, empty=True, name=f"{shader_node}SG")
             mc.connectAttr(f'{shader_node}.outColor', f'{sg_node}.surfaceShader')
         
-        # オブジェクトへの割り当て
         mc.sets(obj_path, edit=True, forceElement=sg_node)
         return is_new_material
 
     def toggle_texture_connection_by_type(self, tex_type):
-        """指定タイプのテクスチャ接続をトグルする"""
         self.status_label.setText(f"'{tex_type}' 接続をトグル中...")
         QtWidgets.QApplication.processEvents()
         
@@ -587,12 +500,11 @@ class MaterialTextureManagerWindow(MayaQWidgetBaseMixin, QtWidgets.QWidget):
         else:
             if original_selection:
                 obj_path = original_selection[0]
-                material_name = shader # シェーダ名をベースにする
+                material_name = shader 
                 self._connect_single_texture(shader, material_name, tex_type, obj_path)
             else:
                 self.status_label.setText("<font color='orange'>テクスチャ接続にはオブジェクトの選択が必要です。</font>")
 
-        # 処理中に選択が外れることがあるため、再選択する
         if original_selection:
             mc.select(original_selection, replace=True)
             
@@ -600,7 +512,6 @@ class MaterialTextureManagerWindow(MayaQWidgetBaseMixin, QtWidgets.QWidget):
         self.status_label.setText(f"<font color='blue'>{tex_type} 接続をトグルしました。</font>")
 
     def _connect_single_texture(self, shader_node, material_name, tex_type, obj_path):
-        """指定された単一タイプのテクスチャを検索し、シェーダに接続する"""
         texture_dir = self._get_texture_directory(material_name)
         if not texture_dir:
             mc.warning(f"テクスチャディレクトリが見つかりません: {material_name}")
@@ -613,7 +524,6 @@ class MaterialTextureManagerWindow(MayaQWidgetBaseMixin, QtWidgets.QWidget):
             self.status_label.setText(f"<font color='orange'>'{tex_type}' テクスチャが見つかりません。</font>")
             return
 
-        # 既存の接続をクリーンアップ
         self._cleanup_single_connection(shader_node, tex_type)
 
         file_node, _ = self._create_texture_file_node(material_name, tex_type, texture_path)
@@ -632,12 +542,12 @@ class MaterialTextureManagerWindow(MayaQWidgetBaseMixin, QtWidgets.QWidget):
                     shapes = mc.listRelatives(obj_path, shapes=True, fullPath=True, type='mesh')
                     if shapes:
                         for shape in shapes:
-                            mc.setAttr(f"{shape}.aiSubdivType", 1) # Catclark
+                            mc.setAttr(f"{shape}.aiSubdivType", 1) 
             elif tex_type == "base_color":
                 mc.connectAttr(f"{file_node}.outColor", f"{shader_node}.{ATTRIBUTE_MAP[tex_type]}", force=True)
             elif tex_type == "opacity":
                 mc.connectAttr(f"{file_node}.outColor", f"{shader_node}.{ATTRIBUTE_MAP[tex_type]}", force=True)
-            else: # metalness, roughnessなど (Alpha is Luminance)
+            else:
                 mc.connectAttr(f"{file_node}.outAlpha", f"{shader_node}.{ATTRIBUTE_MAP[tex_type]}", force=True)
             
             print(f"接続成功: {texture_path} -> {shader_node}")
@@ -645,7 +555,6 @@ class MaterialTextureManagerWindow(MayaQWidgetBaseMixin, QtWidgets.QWidget):
             print(f"接続失敗: {file_node} -> {shader_node}: {e}")
 
     def _cleanup_single_connection(self, shader, tex_type):
-        """指定シェーダの特定テクスチャタイプの接続と関連ノードを削除する"""
         full_attr = ""
         if tex_type == "normal":
             full_attr = f"{shader}.normalCamera"
@@ -660,21 +569,18 @@ class MaterialTextureManagerWindow(MayaQWidgetBaseMixin, QtWidgets.QWidget):
 
         source_node = mc.listConnections(full_attr, s=True, d=False, p=False)
         if source_node:
-            # 接続に関連する上流ノード（file, place2d, utilityなど）を取得して削除
             history = mc.listHistory(source_node[0])
             nodes_to_delete = {node for node in history if mc.nodeType(node) in ['file', 'place2dTexture', 'aiNormalMap', 'bump2d', 'displacementShader']}
             if nodes_to_delete:
                 mc.delete(list(nodes_to_delete))
 
     def _create_texture_file_node(self, material_name, tex_type, texture_path):
-        """fileノードとplace2dTextureノードを作成し、設定を行う"""
         file_node_name = f"{material_name}_{tex_type}_file"
         p2d_node_name = f"{material_name}_{tex_type}_p2d"
 
         file_node = mc.shadingNode('file', asTexture=True, name=file_node_name, isColorManaged=True)
         p2d_node = mc.shadingNode('place2dTexture', asUtility=True, name=p2d_node_name)
         
-        # place2dTextureをfileノードに接続
         mc.connectAttr(f'{p2d_node}.coverage', f'{file_node}.coverage', f=True)
         mc.connectAttr(f'{p2d_node}.translateFrame', f'{file_node}.translateFrame', f=True)
         mc.connectAttr(f'{p2d_node}.rotateFrame', f'{file_node}.rotateFrame', f=True)
@@ -693,9 +599,8 @@ class MaterialTextureManagerWindow(MayaQWidgetBaseMixin, QtWidgets.QWidget):
         mc.setAttr(f"{file_node}.fileTextureName", texture_path, type="string")
 
         if "<UDIM>" in texture_path:
-            mc.setAttr(f"{file_node}.uvTilingMode", 3) # UDIM (Mari)
+            mc.setAttr(f"{file_node}.uvTilingMode", 3)
 
-        # カラーマネジメントと設定
         if tex_type in LINEAR_WORKFLOW_TYPES:
             mc.setAttr(f"{file_node}.colorSpace", "Raw", type="string")
             mc.setAttr(f"{file_node}.alphaIsLuminance", True)
@@ -705,12 +610,7 @@ class MaterialTextureManagerWindow(MayaQWidgetBaseMixin, QtWidgets.QWidget):
 
         return file_node, p2d_node
 
-    # --------------------------------------------------------------------------
-    # テクスチャパス管理
-    # --------------------------------------------------------------------------
-
     def get_texture_root_dir(self):
-        """UIから現在のテクスチャ検索ルートパスを取得する"""
         custom_path = self.custom_path_combo.currentText()
         if custom_path and custom_path != "[Default] Project's sourceimages" and os.path.isdir(custom_path):
             return custom_path.replace("\\", "/")
@@ -720,29 +620,23 @@ class MaterialTextureManagerWindow(MayaQWidgetBaseMixin, QtWidgets.QWidget):
         return os.path.join(project_path, source_images_folder).replace("\\", "/")
         
     def update_active_path_display(self):
-        """現在有効なテクスチャ検索パスをUIに表示する"""
         active_path = self.get_texture_root_dir()
         self.active_path_label.setText(f"アクティブパス: {active_path}")
 
     def _get_texture_directory(self, material_name):
-        """指定されたマテリアル名に対応するテクスチャフォルダのパスを返す"""
         root_dir = self.get_texture_root_dir()
-        # まずはマテリアル名と完全に一致するフォルダを探す
         specific_texture_dir = os.path.join(root_dir, material_name)
         if os.path.isdir(specific_texture_dir):
             return specific_texture_dir
         
-        # 見つからない場合、末尾の "_mat" などを削除して探す
         base_name = material_name.rsplit('_', 1)[0]
         base_texture_dir = os.path.join(root_dir, base_name)
         if os.path.isdir(base_texture_dir):
             return base_texture_dir
             
-        # それでも見つからない場合はルートを返す
         return root_dir
 
     def find_texture_file(self, texture_dir, texture_type):
-        """指定フォルダ内から特定のテクスチャタイプのファイルを探す"""
         if not os.path.isdir(texture_dir): return None
         
         udim_pattern = re.compile(r'(.+?)[._](\d{4})\.(.+)$', re.IGNORECASE)
@@ -750,7 +644,6 @@ class MaterialTextureManagerWindow(MayaQWidgetBaseMixin, QtWidgets.QWidget):
         try: filenames = os.listdir(texture_dir)
         except OSError: return None
 
-        # UDIMファイルの検索
         udim_sets = {}
         for filename in filenames:
             if texture_type.lower() in filename.lower():
@@ -760,7 +653,6 @@ class MaterialTextureManagerWindow(MayaQWidgetBaseMixin, QtWidgets.QWidget):
                     udim_path = os.path.join(texture_dir, f"{base_name}.<UDIM>.{ext}").replace("\\", "/")
                     return udim_path
 
-        # 単一ファイルの検索
         for filename in filenames:
             if texture_type.lower() in filename.lower():
                  return os.path.join(texture_dir, filename).replace("\\", "/")
@@ -768,14 +660,12 @@ class MaterialTextureManagerWindow(MayaQWidgetBaseMixin, QtWidgets.QWidget):
         return None
 
     def browse_for_path(self):
-        """フォルダ選択ダイアログを開き、パスを設定する"""
         result = mc.fileDialog2(fileMode=3, dialogStyle=2, startingDirectory=self.get_texture_root_dir())
         if result:
             self.custom_path_combo.setCurrentText(result[0])
             self.add_current_path_to_history()
 
     def add_current_path_to_history(self):
-        """現在のパスをMayaのoptionVarに保存する"""
         path_to_save = self.custom_path_combo.currentText()
         if not (path_to_save and os.path.isdir(path_to_save)):
             return
@@ -785,15 +675,14 @@ class MaterialTextureManagerWindow(MayaQWidgetBaseMixin, QtWidgets.QWidget):
         
         if path_to_save in saved_paths:
             saved_paths.remove(path_to_save)
-        saved_paths.insert(0, path_to_save) # 先頭に追加
+        saved_paths.insert(0, path_to_save) 
         
-        mc.optionVar(stringValue=(OPTION_VAR_KEY, ';'.join(saved_paths[:20]))) # 履歴は20件まで
+        mc.optionVar(stringValue=(OPTION_VAR_KEY, ';'.join(saved_paths[:20]))) 
         self.load_saved_paths()
         self.custom_path_combo.setCurrentText(path_to_save)
         self.status_label.setText("<font color='blue'>パスの履歴を更新しました。</font>")
 
     def load_saved_paths(self):
-        """保存されたパスをoptionVarから読み込む"""
         self.custom_path_combo.blockSignals(True)
         current_text = self.custom_path_combo.currentText()
         self.custom_path_combo.clear()
@@ -811,16 +700,7 @@ class MaterialTextureManagerWindow(MayaQWidgetBaseMixin, QtWidgets.QWidget):
         self.custom_path_combo.blockSignals(False)
         self.update_active_path_display()
         
-    # --------------------------------------------------------------------------
-    # ユーティリティ機能
-    # --------------------------------------------------------------------------
-    
-    # ★★★ 変更点: 新しいメソッドを追加 ★★★
     def set_default_subdivision(self):
-        """
-        選択されたメッシュのArnoldサブディビジョン設定を有効にし、
-        イテレーションを2に、タイプを'catclark'に設定します。
-        """
         selected_objects = mc.ls(selection=True, long=True)
         if not selected_objects:
             self.status_label.setText("<font color='orange'>オブジェクトが選択されていません。</font>")
@@ -830,7 +710,6 @@ class MaterialTextureManagerWindow(MayaQWidgetBaseMixin, QtWidgets.QWidget):
         meshes_found = False
         processed_count = 0
         for obj in selected_objects:
-            # トランスフォームノードからシェイプノードを取得
             shapes = mc.listRelatives(obj, shapes=True, fullPath=True, type='mesh')
             if not shapes:
                 continue
@@ -840,13 +719,11 @@ class MaterialTextureManagerWindow(MayaQWidgetBaseMixin, QtWidgets.QWidget):
                 print(f"Applying subdivision settings to: {shape}")
                 
                 try:
-                    # aiSubdivType アトリビュートを設定 (1は 'catclark')
                     if mc.attributeQuery('aiSubdivType', node=shape, exists=True):
                         mc.setAttr(f"{shape}.aiSubdivType", 1)
                     else:
                         mc.warning(f"{shape} に 'aiSubdivType' アトリビュートがありません。")
 
-                    # aiSubdivIterations アトリビュートを設定
                     if mc.attributeQuery('aiSubdivIterations', node=shape, exists=True):
                         mc.setAttr(f"{shape}.aiSubdivIterations", 2)
                     else:
@@ -860,11 +737,9 @@ class MaterialTextureManagerWindow(MayaQWidgetBaseMixin, QtWidgets.QWidget):
             mc.warning("No mesh shapes found in the selection.")
         else:
             self.status_label.setText(f"<font color='green'>{processed_count}個のメッシュにSubdivisionを設定しました。</font>")
-            # UIを更新してスライダーに反映
             self.update_arnold_attributes_ui()
             
     def toggle_all_normal_invert_y(self):
-        """シーン内の全てのaiNormalMapノードのInvert Yアトリビュートをトグルする"""
         normal_nodes = mc.ls(type='aiNormalMap')
         if not normal_nodes:
             self.status_label.setText("<font color='orange'>シーンにaiNormalMapノードがありません。</font>")
@@ -882,7 +757,6 @@ class MaterialTextureManagerWindow(MayaQWidgetBaseMixin, QtWidgets.QWidget):
         self.status_label.setText(f"<font color='green'>{toggled_count}個のaiNormalMapノードのInvert Yをトグルしました。</font>")
 
     def reload_all_textures(self):
-        """シーン内の全てのfileノードのテクスチャをリロードする"""
         file_nodes = mc.ls(type='file')
         if not file_nodes:
             self.status_label.setText("<font color='orange'>シーンにfileノードがありません。</font>")
@@ -891,7 +765,6 @@ class MaterialTextureManagerWindow(MayaQWidgetBaseMixin, QtWidgets.QWidget):
         reloaded_count = 0
         for node in file_nodes:
             try:
-                # Mayaの内部リロードコマンドを使用するのが最も確実
                 mel.eval(f'AEfileTextureReloadCmd "{node}"')
                 reloaded_count += 1
             except Exception as e:
@@ -901,24 +774,18 @@ class MaterialTextureManagerWindow(MayaQWidgetBaseMixin, QtWidgets.QWidget):
         print(f"Reloaded {reloaded_count} textures.")
 
     def delete_unused_nodes(self):
-        """未使用のシェーディングノードを削除する"""
         try:
             mel.eval('hyperShadePanelMenuCommand("hyperShadePanel1", "deleteUnusedNodes");')
             self.status_label.setText("<font color='green'>未使用ノードを削除しました。</font>")
             print("Deleted unused nodes.")
-            self.populate_material_list() # マテリアルリストを更新
+            self.populate_material_list() 
         except Exception as e:
             self.status_label.setText("<font color='red'>未使用ノードの削除に失敗しました。</font>")
             mc.warning(f"Failed to delete unused nodes: {e}")
 
-# --- ウィンドウの起動と管理 ---
 material_manager_window_instance = None
 
 def show_material_manager_window():
-    """
-    ウィンドウを起動するための関数。
-    既存のウィンドウがあれば、それを閉じてから新しく開く。
-    """
     global material_manager_window_instance
     if material_manager_window_instance is not None:
         try:
@@ -927,13 +794,10 @@ def show_material_manager_window():
         except Exception as e:
             print(f"既存ウィンドウのクローズ中にエラーが発生: {e}")
     
-    # Mayaのメインウィンドウを親としてウィンドウをインスタンス化
     maya_main_window = get_maya_main_window()
     material_manager_window_instance = MaterialTextureManagerWindow(parent=maya_main_window)
     material_manager_window_instance.show()
     return material_manager_window_instance
 
-# --- スクリプトの実行 ---
 if __name__ == "__main__":
-    # Mayaのスクリプトエディタで実行した際にウィンドウを表示
     show_material_manager_window()
