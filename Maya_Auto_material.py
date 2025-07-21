@@ -27,16 +27,12 @@ OPTION_VAR_KEY = "MAYA_MATERIAL_ASSIGNER_SAVED_PATHS"
 
 
 def get_maya_main_window():
-    """MayaのメインウィンドウをPySideのウィジェットとして取得する"""
     main_window_ptr = omui.MQtUtil.mainWindow()
     if main_window_ptr is None:
         raise RuntimeError("Mayaのメインウィンドウが見つかりません。")
     return wrapInstance(int(main_window_ptr), QtWidgets.QWidget)
 
 class MaterialTextureManagerWindow(MayaQWidgetBaseMixin, QtWidgets.QWidget):
-    """
-    マテリアルの作成、割り当て、テクスチャ接続、各種ユーティリティ機能を統合したUIウィンドウクラス。
-    """
     def __init__(self, parent=None):
         super(MaterialTextureManagerWindow, self).__init__(parent)
         self.setWindowTitle("Material & Texture Manager")
@@ -60,7 +56,6 @@ class MaterialTextureManagerWindow(MayaQWidgetBaseMixin, QtWidgets.QWidget):
         self.update_selection_info() 
 
     def setup_ui(self):
-        """UIの部品を作成し、ウィンドウに配置する"""
         top_layout = QtWidgets.QVBoxLayout(self)
         top_layout.setContentsMargins(0, 0, 0, 0)
 
